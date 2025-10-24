@@ -221,6 +221,33 @@ public:
   void check();
 };
 
+class LineFollowerSensor
+{
+private:
+  float frequency = 0.0;
+
+public:
+  volatile uint32_t pulses_counter = 0;
+  volatile uint32_t last_two_pulses_delta = 0;
+  volatile uint32_t last_pulse_micros = 0;
+
+  struct Statistics
+  {
+    uint32_t count;
+    uint32_t delta;
+  };
+
+  /**
+   * Extract statistics and reset sensor data.
+   */
+  Statistics take_statistics();
+  /**
+   * Measures the frequency. This is expected to be called within 100ms
+   * intervals.
+   */
+  float measure_frequency(float old_frequency, unsigned long now);
+};
+
 ////////////////////////////////////////////////////////////////////////////////////
 // SETUP, LOOP & ARDUINO INTERRUPTIONS
 ////////////////////////////////////////////////////////////////////////////////////
@@ -228,7 +255,7 @@ public:
 /**
  * Display de frequency (in Hz) in LCD.
  */
-void display_frequency(const double frequency);
+void display_frequency(const double frequency, const char *measurement);
 /**
  * Display the amount of propellers being used in LCD.
  */
@@ -238,8 +265,10 @@ void display_propellers(const uint8_t quantity);
 // GLOBAL STATIC CONSTANTS
 ////////////////////////////////////////////////////////////////////////////////////
 
-const uint8_t lcd_refresh_rate = 100;       // ms
-const uint8_t button_read_refresh_rate = 0; // ms
+const uint8_t lcd_refresh_rate = 100;                     // ms
+const uint8_t button_read_refresh_rate = 0;               // ms
+const uint16_t line_follower_frequency_check_rate = 1000; // 1s
+const uint8_t statisfying_measurement_limit = 10;         // ms
 
 ////////////////////////////////////////////////////////////////////////////////////
 // SETUP, LOOP & ARDUINO INTERRUPTIONS
@@ -278,12 +307,27 @@ void setup()
   // outro periférico deste pino.
   DIDR0 = 0b00111111;
 
-  LcdFacade::initialize_lcd();
-  LcdFacade::turn_cursor_off();
-
   // TODO: enable what interrups?
   // falling edge??
+
+  // Ativa o pull-up do sensor segue faixa.
+  PORTC |= (1 << PC3);
+  // Permite que mudanças no estado deses pino enganchem interrupções.
+  PCMSK1 |= (1 << PC3);
+  // Habilita interrupções para o grupo de interrupções 1 (A0 - A5).
+  PCICR |= (1 << PCIE1);
+  // Limpa a flag de interrupção para caso tenha alguma pendente de outra
+  // execução anterior.
+  PCIFR |= (1 << PCIF1);
+  // Força o arduino a parar o loop diante de uma interrupção, mesmo que
+  // configuradas manualmente (como é o caso aqui).
+  interrupts();
+
+  LcdFacade::initialize_lcd();
+  LcdFacade::turn_cursor_off();
 }
+
+auto line_follower_sensor = LineFollowerSensor();
 
 void loop()
 {
@@ -294,13 +338,22 @@ void loop()
 
   static size_t last_lcd_update = 0;
   static size_t last_button_read = 0;
+  static size_t last_sensor_check = 0;
+  static auto pulse_frequency = 0.0;
 
   auto now = millis();
   if (now - last_lcd_update > lcd_refresh_rate)
   {
     last_lcd_update = now;
 
-    display_frequency(12.3);
+    pulse_frequency =
+        line_follower_sensor.measure_frequency(pulse_frequency, now);
+
+    /** Frequência de rotação do eixo em HZ/RPS */
+    const auto estimated_axis_frequency =
+        pulse_frequency / propellers_base.get_propellers();
+
+    display_frequency(estimated_axis_frequency, "Hz");
     display_propellers(propellers_base.get_propellers());
   }
 
@@ -313,12 +366,35 @@ void loop()
       propellers_base.increase_propellers_saturating();
     }
   }
+
+  if (now - last_sensor_check > line_follower_frequency_check_rate)
+  {
+    last_sensor_check = now;
+  }
 }
 
-// ISR(????_vect)
-// {
-// TODO: what to do?
-// }
+// Como só o pino A3 está conectado no grupo 1, é garantido
+// que essa interrupção só será acionada diante de alterações
+// no valor lógico do pino A3.
+ISR(PCINT1_vect)
+{
+  static auto pin_manager = PinManager(&PINC, PC3);
+
+  // Executa somente quando estiver no sinal baixo (falling edge).
+  if (pin_manager.get_digital_level()) return;
+
+  auto now_micros = micros();
+
+  const auto has_previous_pulse = line_follower_sensor.last_pulse_micros > 0;
+  if (has_previous_pulse)
+  {
+    line_follower_sensor.last_two_pulses_delta =
+        now_micros - line_follower_sensor.last_pulse_micros;
+  }
+
+  line_follower_sensor.pulses_counter++;
+  line_follower_sensor.last_pulse_micros = now_micros;
+}
 
 ////////////////////////////////////////////////////////////////////////////////////
 // IMPLEMENTAÇÕES DAS CLASSES
@@ -421,7 +497,7 @@ void LcdFacade::send_string(const char *str)
   }
 }
 
-void display_frequency(const double frequency)
+void display_frequency(const double frequency, const char *measurement)
 {
   const uint8_t available_pixels = 7;
   // precisa de espaço pro caractere nulo, por isso `available_pixels` + 1
@@ -434,8 +510,7 @@ void display_frequency(const double frequency)
     LcdFacade::send_character(frequency_string[i]);
   }
 
-  const char prefix[] = "Hz";
-  LcdFacade::send_string(prefix);
+  LcdFacade::send_string(measurement);
 }
 
 PropellersBase::PropellersBase() : propellers(0) {}
@@ -481,4 +556,43 @@ void Button::check()
 {
   this->previous_state = this->current_state;
   this->current_state = this->pin_manager.get_digital_level();
+}
+
+LineFollowerSensor::Statistics LineFollowerSensor::take_statistics()
+{
+  noInterrupts();
+  Statistics statistics = {.count = this->pulses_counter,
+                           .delta = this->last_two_pulses_delta};
+  this->pulses_counter = 0;
+  interrupts();
+  return statistics;
+}
+
+float LineFollowerSensor::measure_frequency(float old_frequency,
+                                            unsigned long now)
+{
+  auto sensor_statistics = line_follower_sensor.take_statistics();
+
+  if (sensor_statistics.delta > statisfying_measurement_limit)
+  {
+    // Calcula a frequência em Hz
+    const auto secondInMicros = 1000000.0;
+    return secondInMicros / (float)sensor_statistics.delta;
+  }
+
+  if (sensor_statistics.count > 0)
+  {
+    const auto pulses_within_100_ms = sensor_statistics.count;
+    const auto pulses_within_1_sec = pulses_within_100_ms * 10;
+    return (float)pulses_within_1_sec;
+  }
+
+  const uint8_t inactivity_time_limit = 200; // ms
+  const auto last_pulse_millis = last_pulse_micros / 1000;
+  if (now - last_pulse_millis > inactivity_time_limit)
+  {
+    return 0.0;
+  }
+
+  return old_frequency;
 }
