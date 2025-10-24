@@ -157,6 +157,23 @@ private:
   static void enable_pulse();
 };
 
+class PropellersBase
+{
+private:
+  uint8_t propellers = 1;
+
+public:
+  /**
+   * Aumenta a quantidade de hélices na base, seguindo — ciclicamente —
+   * adiante no intervalo [1, 9].
+   */
+  void increase_propellers_saturating();
+  /**
+   * Obtém a atual quantidade de hélices disponíveis na base.
+   */
+  uint8_t get_propellers() const;
+};
+
 ////////////////////////////////////////////////////////////////////////////////////
 // GLOBAL STATIC CONSTANTS
 ////////////////////////////////////////////////////////////////////////////////////
@@ -225,6 +242,8 @@ const uint8_t button_read_refresh_rate = 125; // ms
 
 void loop()
 {
+
+  static auto propellers_base = PropellersBase();
   static size_t last_lcd_update = 0;
   static size_t last_button_read = 0;
   static auto char_display = 0;
@@ -235,7 +254,8 @@ void loop()
     last_lcd_update = now;
 
     display_frequency(12.3);
-    display_propellers(2);
+    display_propellers(propellers_base.get_propellers());
+    propellers_base.increase_propellers_saturating();
   }
 
   // TODO: ler botao
@@ -378,3 +398,10 @@ void display_propellers(const uint8_t quantity)
   itoa(quantity, buffer, 10);
   LcdFacade::send_character(buffer[0]);
 }
+
+void PropellersBase::increase_propellers_saturating()
+{
+  this->propellers = (++this->propellers) % 9;
+}
+
+uint8_t PropellersBase::get_propellers() const { return this->propellers + 1; }
