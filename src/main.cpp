@@ -111,11 +111,15 @@ public:
   /**
    * Envia um comando para o LCD.
    */
-  static void send_command(uint8_t command_byte);
+  static void send_command(const uint8_t command_byte);
   /**
    * Envia um caractere para ser impresso no LCD.
    */
-  static void send_character(uint8_t character_byte);
+  static void send_character(const uint8_t character_byte);
+  /**
+   * Envia uma string para ser impressa no LCD.
+   */
+  static void send_string(const char *str);
   /**
    * Inicializa o LCD configurado para usar uma via de dados de 4 bits.
    */
@@ -130,23 +134,23 @@ public:
    * Move o cursor para a linha `line`, a `offset` colunas após a
    * primeira coluna.
    */
-  static void move_cursor(LcdLine line, uint8_t offset);
+  static void move_cursor(const LcdLine line, const uint8_t offset);
 
 private:
   /**
    * Envia caracteres ou comandos para o LCD utilizando a via de 4 bits (1
    * nibble).
    */
-  static void send_message(uint8_t data, MessageType msg_type);
+  static void send_message(const uint8_t data, const MessageType msg_type);
   /**
    * Coloca o pino `DATA_TYPE_PIN` no respectivo estado de acordo com o tipo de
    * dado da mensagem.
    */
-  static void set_message_data_type_to_pin(MessageType msg_type);
+  static void set_message_data_type_to_pin(const MessageType msg_type);
   /**
    * Coloca os dados (`data`) no LCD nibble-a-nibble.
    */
-  static void set_data_to_lcd(uint8_t data);
+  static void set_data_to_lcd(const uint8_t data);
   /**
    * Manda um sinal de habilitação (pulso) para o LCD.
    */
@@ -166,7 +170,18 @@ uint8_t active_digit = 0;
 // SETUP, LOOP & ARDUINO INTERRUPTIONS
 ////////////////////////////////////////////////////////////////////////////////////
 
-unsigned long long mymillis;
+/**
+ * Display de frequency (in Hz) in LCD.
+ */
+void display_frequency(const double frequency);
+/**
+ * Display the amount of propellers being used in LCD.
+ */
+void display_propellers(const uint8_t quantity);
+
+////////////////////////////////////////////////////////////////////////////////////
+// SETUP, LOOP & ARDUINO INTERRUPTIONS
+////////////////////////////////////////////////////////////////////////////////////
 
 void setup()
 {
@@ -199,18 +214,7 @@ void setup()
   DIDR0 = 0b00111111;
 
   LcdFacade::initialize_lcd();
-
-  LcdFacade::move_cursor(LcdFacade::LcdLine::Upper, 15);
-  LcdFacade::send_character(0x25);
-  LcdFacade::move_cursor(LcdFacade::LcdLine::Lower, 15);
-  LcdFacade::send_character(0x25);
-
-  LcdFacade::move_cursor(LcdFacade::LcdLine::Upper, 0);
-  LcdFacade::send_character(0);
-  LcdFacade::move_cursor(LcdFacade::LcdLine::Lower, 0);
-  LcdFacade::send_character(6);
-
-  // LcdFacade::clear();
+  LcdFacade::turn_cursor_off();
 
   // TODO: enable what interrups?
   // falling edge??
@@ -223,12 +227,15 @@ void loop()
 {
   static size_t last_lcd_update = 0;
   static size_t last_button_read = 0;
+  static auto char_display = 0;
 
   auto now = millis();
   if (now - last_lcd_update > lcd_refresh_rate)
   {
     last_lcd_update = now;
-    // TODO: update LCD
+
+    display_frequency(12.3);
+    display_propellers(2);
   }
 
   // TODO: ler botao
@@ -256,7 +263,7 @@ void LcdFacade::enable_pulse()
   _delay_us(45);
 }
 
-void LcdFacade::set_data_to_lcd(uint8_t data)
+void LcdFacade::set_data_to_lcd(const uint8_t data)
 {
   set_most_significant_nibble(data);
   enable_pulse();
@@ -264,7 +271,7 @@ void LcdFacade::set_data_to_lcd(uint8_t data)
   enable_pulse();
 }
 
-void LcdFacade::set_message_data_type_to_pin(MessageType msg_type)
+void LcdFacade::set_message_data_type_to_pin(const MessageType msg_type)
 {
   switch (msg_type)
   {
@@ -277,7 +284,7 @@ void LcdFacade::set_message_data_type_to_pin(MessageType msg_type)
   }
 }
 
-void LcdFacade::send_message(uint8_t data, MessageType msg_type)
+void LcdFacade::send_message(const uint8_t data, const MessageType msg_type)
 {
   set_message_data_type_to_pin(msg_type);
   set_data_to_lcd(data);
@@ -288,12 +295,12 @@ void LcdFacade::send_message(uint8_t data, MessageType msg_type)
   if (is_return_or_clean_instruction) _delay_ms(2);
 }
 
-void LcdFacade::send_command(uint8_t command_byte)
+void LcdFacade::send_command(const uint8_t command_byte)
 {
   send_message(command_byte, MessageType::Instruction);
 }
 
-void LcdFacade::send_character(uint8_t character_byte)
+void LcdFacade::send_character(const uint8_t character_byte)
 {
   send_message(character_byte, MessageType::Character);
 }
@@ -302,7 +309,7 @@ void LcdFacade::clear() { send_command(0x01); }
 void LcdFacade::turn_cursor_on() { send_command(0x0F); }
 void LcdFacade::turn_cursor_off() { send_command(0x0C); }
 
-void LcdFacade::move_cursor(LcdLine line, uint8_t offset)
+void LcdFacade::move_cursor(const LcdLine line, const uint8_t offset)
 {
   switch (line)
   {
@@ -332,4 +339,42 @@ void LcdFacade::initialize_lcd()
   send_command(0x01);
   send_command(0x0F);
   send_command(0x80);
+}
+
+void LcdFacade::send_string(const char *str)
+{
+  size_t i = 0;
+  while (str[i])
+  {
+    LcdFacade::send_character(str[i]);
+    i++;
+  }
+}
+
+void display_frequency(const double frequency)
+{
+  const uint8_t available_pixels = 7;
+  // precisa de espaço pro caractere nulo, por isso `available_pixels` + 1
+  char frequency_string[available_pixels + 1];
+  dtostrf(frequency, available_pixels, 1, frequency_string);
+
+  LcdFacade::move_cursor(LcdFacade::LcdLine::Upper, 0);
+  for (uint8_t i = 0; i < available_pixels; i++)
+  {
+    LcdFacade::send_character(frequency_string[i]);
+  }
+
+  const char prefix[] = "Hz";
+  LcdFacade::send_string(prefix);
+}
+
+void display_propellers(const uint8_t quantity)
+{
+  const char prefix[] = "Helices: ";
+  LcdFacade::move_cursor(LcdFacade::LcdLine::Lower, 0);
+  LcdFacade::send_string(prefix);
+
+  char buffer[2];
+  itoa(quantity, buffer, 10);
+  LcdFacade::send_character(buffer[0]);
 }
