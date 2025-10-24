@@ -160,9 +160,10 @@ private:
 class PropellersBase
 {
 private:
-  uint8_t propellers = 1;
+  uint8_t propellers;
 
 public:
+  PropellersBase();
   /**
    * Aumenta a quantidade de hélices na base, seguindo — ciclicamente —
    * adiante no intervalo [1, 9].
@@ -174,14 +175,51 @@ public:
   uint8_t get_propellers() const;
 };
 
-////////////////////////////////////////////////////////////////////////////////////
-// GLOBAL STATIC CONSTANTS
-////////////////////////////////////////////////////////////////////////////////////
+class PinManager
+{
+private:
+  const uint8_t pin_;
+  const volatile uint8_t *register_;
 
-/*
- * @brief Representa qual dígito vai ser ativado na corrente iteração do`loop`.
- */
-uint8_t active_digit = 0;
+public:
+  PinManager(volatile uint8_t *register_, uint8_t pin_);
+  /**
+   * Obtém o nível digital do pino interpretado como booleano, onde:
+   * - `LOW` = `false`,
+   * - `HIGHT` = `true.
+   */
+  bool get_digital_level() const;
+};
+
+class Button
+{
+private:
+  const PinManager pin_manager;
+  // Inicializa ambos como não pressionados.
+  // Lembre-se que os botões, quando pressionados, ficam no estado
+  // lógico/digital `LOW` (`false`).
+  bool previous_state = true;
+  bool current_state = true;
+
+public:
+  Button(PinManager pin_manager);
+  /**
+   * Checa se houve alguma alteração no estado do botão.
+   */
+  bool has_changed() const;
+  /**
+   * Se, e somente se, `has_changed() == true`, este método retorna:
+   * - `true` se o botão foi pressionado;
+   * - `false` se o botão foi solto.
+   *
+   * Caso contrário, o resultado desta função não tem significado.
+   */
+  bool has_been_pressed() const;
+  /**
+   * Checa o nível digital do botão para checar se houve interação.
+   */
+  void check();
+};
 
 ////////////////////////////////////////////////////////////////////////////////////
 // SETUP, LOOP & ARDUINO INTERRUPTIONS
@@ -197,6 +235,13 @@ void display_frequency(const double frequency);
 void display_propellers(const uint8_t quantity);
 
 ////////////////////////////////////////////////////////////////////////////////////
+// GLOBAL STATIC CONSTANTS
+////////////////////////////////////////////////////////////////////////////////////
+
+const uint8_t lcd_refresh_rate = 100;       // ms
+const uint8_t button_read_refresh_rate = 0; // ms
+
+////////////////////////////////////////////////////////////////////////////////////
 // SETUP, LOOP & ARDUINO INTERRUPTIONS
 ////////////////////////////////////////////////////////////////////////////////////
 
@@ -206,8 +251,11 @@ void setup()
   DDRD |= 0b11110000;
 
   // Torna os pinos que controlam o LCD em saídas (conectados no Enable e
-  // Read/Write).
+  // Read/Write). Torna o pino do botão uma entrada.
   DDRB |= 0b00011000;
+
+  // Ativa o pull-up do botão
+  PORTB |= (1 << PB0);
 
   // DIDRx: Digital Input Disable Register x
   // Um único pino no ATmega328 pode ser uma saída ou uma entrada (digital ou
@@ -237,16 +285,15 @@ void setup()
   // falling edge??
 }
 
-const uint8_t lcd_refresh_rate = 100;         // ms
-const uint8_t button_read_refresh_rate = 125; // ms
-
 void loop()
 {
-
   static auto propellers_base = PropellersBase();
+  static auto button = Button(PinManager(&PINB, PB0));
+
+  button.check();
+
   static size_t last_lcd_update = 0;
   static size_t last_button_read = 0;
-  static auto char_display = 0;
 
   auto now = millis();
   if (now - last_lcd_update > lcd_refresh_rate)
@@ -255,13 +302,16 @@ void loop()
 
     display_frequency(12.3);
     display_propellers(propellers_base.get_propellers());
-    propellers_base.increase_propellers_saturating();
   }
 
-  // TODO: ler botao
-  if (now - last_button_read > button_read_refresh_rate)
+  if (button.has_changed() &&
+      (now - last_button_read > button_read_refresh_rate))
   {
     last_button_read = now;
+    if (button.has_been_pressed())
+    {
+      propellers_base.increase_propellers_saturating();
+    }
   }
 }
 
@@ -388,6 +438,8 @@ void display_frequency(const double frequency)
   LcdFacade::send_string(prefix);
 }
 
+PropellersBase::PropellersBase() : propellers(0) {}
+
 void display_propellers(const uint8_t quantity)
 {
   const char prefix[] = "Helices: ";
@@ -401,7 +453,32 @@ void display_propellers(const uint8_t quantity)
 
 void PropellersBase::increase_propellers_saturating()
 {
-  this->propellers = (++this->propellers) % 9;
+  ++this->propellers %= 9;
 }
 
 uint8_t PropellersBase::get_propellers() const { return this->propellers + 1; }
+
+PinManager::PinManager(volatile uint8_t *register_, uint8_t pin_)
+    : pin_(pin_), register_(register_)
+{
+}
+
+bool PinManager::get_digital_level() const
+{
+  return ((*this->register_) & (1 << this->pin_)) != 0;
+}
+
+Button::Button(PinManager pin_manager) : pin_manager(pin_manager) {}
+
+bool Button::has_changed() const
+{
+  return this->current_state != this->previous_state;
+}
+
+bool Button::has_been_pressed() const { return !this->current_state; }
+
+void Button::check()
+{
+  this->previous_state = this->current_state;
+  this->current_state = this->pin_manager.get_digital_level();
+}
