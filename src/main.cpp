@@ -102,6 +102,12 @@ enum class AvailablePotentiometer
 class LcdFacade
 {
 public:
+  enum class LcdLine
+  {
+    Upper,
+    Lower
+  };
+
   /**
    * Envia um comando para o LCD.
    */
@@ -114,6 +120,17 @@ public:
    * Inicializa o LCD configurado para usar uma via de dados de 4 bits.
    */
   static void initialize_lcd();
+  /**
+   * Limpa o LCD.
+   */
+  static void clear();
+  static void turn_cursor_on();
+  static void turn_cursor_off();
+  /**
+   * Move o cursor para a linha `line`, a `offset` colunas após a
+   * primeira coluna.
+   */
+  static void move_cursor(LcdLine line, uint8_t offset);
 
 private:
   /**
@@ -153,66 +170,12 @@ unsigned long long mymillis;
 
 void setup()
 {
+  // Torna os primeiros 4 pinos do registrador D saídas (são saídas do LCD).
+  DDRD |= 0b11110000;
 
-  LcdFacade::initialize_lcd();
-
-  // Torna os primeiros 7 pinos do registrador D saídas (são os segmentos do
-  // led).
-  DDRD |= 0b01111111;
-
-  // Torna os 3 primeiros pinos do registrador B em saídas (são os pinos dos
-  // leds).
-  DDRB |= 0b00000111;
-
-  // Torna os bits PC0 e PC1 do registrador DDRC inputs (são as entradas dos
-  // potenciômetros), apesar de que já são entradas por padrão.
-  DDRC &= ~(1 << PC0);
-  DDRC &= ~(1 << PC1);
-
-  // Configuração do conversor analógico-digital do microcontrolador do
-  // Arduino (ATmega328).
-  //
-  // Esse trecho coloca o ADMUX num estado 01 (REF0:REF1) que diz que a tensão
-  // usada pela porta AVCC (que alimenta o circuito analógico do
-  // microcontrolador) será a mesma tensão usada como a tensão de referência
-  // (valor máximo que o ADC pode medir).
-  ADMUX &= ~((1 << REFS0) | (1 << REFS1));
-  ADMUX |= (1 << REFS0);
-
-  // * ADCSRx: ADC Control and Status Register x
-  // * ADPSx: ADC Prescaler Select Bit x (é o x-nésimo bit menos significativo
-  // do registrador ADCSRx)
-
-  // Zera os bits do controlador & status B.
-  // Esse registrador controla a fonte de gatilho, entrada e modo do ADC. Ao
-  // zerar, estamos:
-  // * desabilitando a inicialização automática do ADC
-  // * deixando o ADC funcionar no seu modo simples de medição
-  // * desligamos outras configurações avançadas do ADC
-  ADCSRB = 0;
-
-  // Configura individualmente os 3 primeiros bits do controlador & status A,
-  // que definem o clock do conversor ADC (e outras funcionalidades do ADC).
-  ADCSRA &= 0b11111000;
-  // Essa configuração (0b111 = 128) divide o clock principal do
-  // microcontrolador por 128 para formar o clock de trabalho do ADC, isso é,
-  // declara que ADDCLK = CLK / 128.
-  //
-  // Para obter a precisão máxima de um ADC de 10 bits, o clock de conversão
-  // deve estar entre 50kHz e 200kHz, e com esse cálculo, conseguimos chegar num
-  // valor próximo, pois o arduino uno tem um clock de 16MHz, e 16000 (16 mega
-  // hertz) / 128 = 125 (em kiloheartz).
-  ADCSRA |= (1 << ADPS2) | (1 << ADPS1) | (1 << ADPS0);
-
-  // ADIE: ADC Interrupt Enable
-  // Permite que uma interrupção (`ADC_vect) seja acionada sempre que o ADC
-  // terminar de medir a tensão e tiver um valor pronto.
-  ADCSRA |= (1 << ADIE);
-
-  // ADEN: ADC Enable
-  // Liga o ADC manualmente (a nível de hardware, tirando essa parte do circuito
-  // do modo de baixo consumo de energia).
-  ADCSRA |= (1 << ADEN);
+  // Torna os pinos que controlam o LCD em saídas (conectados no Enable e
+  // Read/Write).
+  DDRB |= 0b00011000;
 
   // DIDRx: Digital Input Disable Register x
   // Um único pino no ATmega328 pode ser uma saída ou uma entrada (digital ou
@@ -230,24 +193,24 @@ void setup()
   // * 1, então o buffer digital está desligado
   //
   // Aqui, desligamos o buffer digital de todos os pinos da porta C (de inputs
-  // analógicos). Podemos desligar todos pois somente os 2 primeiros pinos estão
-  // sendo utilizados, e são os do potenciômetro. Portanto, não afetamos nenhum
-  // outro periférico. do pino em que o potenciômetro selecionado está conectado
+  // analógicos). Podemos desligar todos pois somente o terceiro pino está
+  // sendo utilizado, e é o do sensor segue faixa. Portanto, não afetamos nenhum
+  // outro periférico deste pino.
   DIDR0 = 0b00111111;
 
-  // Inicia a primeira conversão. As posteriores serão iniciadas ao final de
-  // cada interrupção.
-  ADCSRA |= (1 << ADSC);
+  LcdFacade::initialize_lcd();
 
-  LcdFacade::send_command(0x8F);
+  LcdFacade::move_cursor(LcdFacade::LcdLine::Upper, 15);
   LcdFacade::send_character(0x25);
-  LcdFacade::send_command(0xCF);
+  LcdFacade::move_cursor(LcdFacade::LcdLine::Lower, 15);
   LcdFacade::send_character(0x25);
 
-  LcdFacade::send_command(0x80);
+  LcdFacade::move_cursor(LcdFacade::LcdLine::Upper, 0);
   LcdFacade::send_character(0);
-  LcdFacade::send_command(0x80 + 0x40);
+  LcdFacade::move_cursor(LcdFacade::LcdLine::Lower, 0);
   LcdFacade::send_character(6);
+
+  // LcdFacade::clear();
 
   // TODO: enable what interrups?
   // falling edge??
@@ -279,3 +242,94 @@ void loop()
 // {
 // TODO: what to do?
 // }
+
+////////////////////////////////////////////////////////////////////////////////////
+// IMPLEMENTAÇÕES DAS CLASSES
+////////////////////////////////////////////////////////////////////////////////////
+
+void LcdFacade::enable_pulse()
+{
+  set_bit(CONTR_LCD, LCD_ENABLE);
+  _delay_us(1);
+  clr_bit(CONTR_LCD, LCD_ENABLE);
+  _delay_us(1);
+  _delay_us(45);
+}
+
+void LcdFacade::set_data_to_lcd(uint8_t data)
+{
+  set_most_significant_nibble(data);
+  enable_pulse();
+  set_less_significant_nibble(data);
+  enable_pulse();
+}
+
+void LcdFacade::set_message_data_type_to_pin(MessageType msg_type)
+{
+  switch (msg_type)
+  {
+  case MessageType::Instruction:
+    clr_bit(CONTR_LCD, DATA_TYPE_PIN);
+    break;
+  case MessageType::Character:
+    set_bit(CONTR_LCD, DATA_TYPE_PIN);
+    break;
+  }
+}
+
+void LcdFacade::send_message(uint8_t data, MessageType msg_type)
+{
+  set_message_data_type_to_pin(msg_type);
+  set_data_to_lcd(data);
+
+  const auto is_return_or_clean_instruction =
+      msg_type == MessageType::Instruction && data < 4;
+
+  if (is_return_or_clean_instruction) _delay_ms(2);
+}
+
+void LcdFacade::send_command(uint8_t command_byte)
+{
+  send_message(command_byte, MessageType::Instruction);
+}
+
+void LcdFacade::send_character(uint8_t character_byte)
+{
+  send_message(character_byte, MessageType::Character);
+}
+
+void LcdFacade::clear() { send_command(0x01); }
+void LcdFacade::turn_cursor_on() { send_command(0x0F); }
+void LcdFacade::turn_cursor_off() { send_command(0x0C); }
+
+void LcdFacade::move_cursor(LcdLine line, uint8_t offset)
+{
+  switch (line)
+  {
+  case LcdLine::Upper:
+    return send_command(0x80 + offset);
+  case LcdLine::Lower:
+    return send_command(0xC0 + offset);
+  }
+}
+
+void LcdFacade::initialize_lcd()
+{
+  clr_bit(CONTR_LCD, DATA_TYPE_PIN);
+  clr_bit(CONTR_LCD, LCD_ENABLE);
+
+  _delay_ms(20);
+  send_message(0x30, MessageType::Instruction);
+  enable_pulse();
+  _delay_ms(5);
+  enable_pulse();
+  _delay_ms(200);
+  enable_pulse();
+  send_command(0x20);
+  enable_pulse();
+  send_command(0x28);
+  send_command(0x08);
+  send_command(0x01);
+  send_command(0x0F);
+  send_command(0x80);
+}
