@@ -13,7 +13,6 @@
  */
 
 #include <Arduino.h>
-#include <stdio.h>
 
 ////////////////////////////////////////////////////////////////////////////////////
 // PINS ALIASES
@@ -645,8 +644,7 @@ next_frequency_measurement(FrequencyMeasurement current_measurement)
   {
   case FrequencyMeasurement::Hz:
     return FrequencyMeasurement::Rpm;
-  case FrequencyMeasurement::Rpm:
+  default:
     return FrequencyMeasurement::Hz;
-    break;
   }
 }
