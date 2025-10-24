@@ -1,5 +1,5 @@
 /**
- * **ATENÇÃO:** quem remover a documentação tornará-se corno dentro de 1 ano.
+ * ATENÇÃO: quem remover a documentação tornará-se corno dentro de 1 ano.
  * Se for solteiro, vai começar a namorar em 6 meses e será traído nos 6
  * restantes.
  *
@@ -9,7 +9,7 @@
  * @author Frank H. Borsato
  * @author João G. Wolf
  * @author Kaio F. C. Amorim
- * @author Marco A. C. Fragata.
+ * @author Marco A. C. Fragata
  */
 
 #include <Arduino.h>
@@ -93,6 +93,12 @@ enum class AvailablePotentiometer
 {
   Left = 0,
   Right = 1
+};
+
+enum class FrequencyMeasurement
+{
+  Hz,
+  Rpm
 };
 
 ////////////////////////////////////////////////////////////////////////////////////
@@ -204,6 +210,11 @@ private:
 public:
   Button(PinManager pin_manager);
   /**
+   * Um estado temporal que pode ser utilizado para construir
+   * debounces e outros limitadores relacionados a este botão.
+   */
+  unsigned long time_state = 0;
+  /**
    * Checa se houve alguma alteração no estado do botão.
    */
   bool has_changed() const;
@@ -238,12 +249,12 @@ public:
   };
 
   /**
-   * Extract statistics and reset sensor data.
+   * Extrai dados relevantes do sensor e reseta seu estado.
    */
   Statistics take_statistics();
   /**
-   * Measures the frequency. This is expected to be called within 100ms
-   * intervals.
+   * Mede a frequência. É esperado que esse método seja chamado num
+   * intervalo de 100ms.
    */
   float measure_frequency(float old_frequency, unsigned long now);
 };
@@ -253,13 +264,20 @@ public:
 ////////////////////////////////////////////////////////////////////////////////////
 
 /**
- * Display de frequency (in Hz) in LCD.
+ * Exibe a frequência (em `measurement`) no LCD.
  */
 void display_frequency(const double frequency, const char *measurement);
+
 /**
- * Display the amount of propellers being used in LCD.
+ * Exibe a quantidade de hélices ativas no LCD.
  */
 void display_propellers(const uint8_t quantity);
+
+/**
+ * Obtém a próxima medida de frequência da enumeração.
+ */
+FrequencyMeasurement
+next_frequency_measurement(FrequencyMeasurement current_measurement);
 
 ////////////////////////////////////////////////////////////////////////////////////
 // GLOBAL STATIC CONSTANTS
@@ -280,11 +298,11 @@ void setup()
   DDRD |= 0b11110000;
 
   // Torna os pinos que controlam o LCD em saídas (conectados no Enable e
-  // Read/Write). Torna o pino do botão uma entrada.
+  // Read/Write). Torna os pinos dos botões entradas.
   DDRB |= 0b00011000;
 
-  // Ativa o pull-up do botão
-  PORTB |= (1 << PB0);
+  // Ativa o pull-up dos botões
+  PORTB |= (1 << PB0) | (1 << PB1);
 
   // DIDRx: Digital Input Disable Register x
   // Um único pino no ATmega328 pode ser uma saída ou uma entrada (digital ou
@@ -332,16 +350,40 @@ auto line_follower_sensor = LineFollowerSensor();
 void loop()
 {
   static auto propellers_base = PropellersBase();
-  static auto button = Button(PinManager(&PINB, PB0));
+  static auto propellers_button = Button(PinManager(&PINB, PB0));
+  static auto frequency_measurement_button = Button(PinManager(&PINB, PB1));
 
-  button.check();
+  propellers_button.check();
+  frequency_measurement_button.check();
 
   static size_t last_lcd_update = 0;
-  static size_t last_button_read = 0;
   static size_t last_sensor_check = 0;
   static auto pulse_frequency = 0.0;
+  static auto current_frequency_measurement = FrequencyMeasurement::Hz;
 
   auto now = millis();
+  if (propellers_button.has_changed() &&
+      (now - propellers_button.time_state > button_read_refresh_rate))
+  {
+    propellers_button.time_state = now;
+    if (propellers_button.has_been_pressed())
+    {
+      propellers_base.increase_propellers_saturating();
+    }
+  }
+
+  if (frequency_measurement_button.has_changed() &&
+      (now - frequency_measurement_button.time_state >
+       button_read_refresh_rate))
+  {
+    frequency_measurement_button.time_state = now;
+    if (frequency_measurement_button.has_been_pressed())
+    {
+      current_frequency_measurement =
+          next_frequency_measurement(current_frequency_measurement);
+    }
+  }
+
   if (now - last_lcd_update > lcd_refresh_rate)
   {
     last_lcd_update = now;
@@ -353,18 +395,17 @@ void loop()
     const auto estimated_axis_frequency =
         pulse_frequency / propellers_base.get_propellers();
 
-    display_frequency(estimated_axis_frequency, "Hz");
-    display_propellers(propellers_base.get_propellers());
-  }
-
-  if (button.has_changed() &&
-      (now - last_button_read > button_read_refresh_rate))
-  {
-    last_button_read = now;
-    if (button.has_been_pressed())
+    switch (current_frequency_measurement)
     {
-      propellers_base.increase_propellers_saturating();
+    case FrequencyMeasurement::Hz:
+      display_frequency(estimated_axis_frequency, "Hz ");
+      break;
+    case FrequencyMeasurement::Rpm:
+      display_frequency(estimated_axis_frequency * 60.0, "RPM");
+      break;
     }
+
+    display_propellers(propellers_base.get_propellers());
   }
 
   if (now - last_sensor_check > line_follower_frequency_check_rate)
@@ -595,4 +636,17 @@ float LineFollowerSensor::measure_frequency(float old_frequency,
   }
 
   return old_frequency;
+}
+
+FrequencyMeasurement
+next_frequency_measurement(FrequencyMeasurement current_measurement)
+{
+  switch (current_measurement)
+  {
+  case FrequencyMeasurement::Hz:
+    return FrequencyMeasurement::Rpm;
+  case FrequencyMeasurement::Rpm:
+    return FrequencyMeasurement::Hz;
+    break;
+  }
 }
